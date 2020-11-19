@@ -1,4 +1,4 @@
-module github.com/devops-simba/cli_utils
+module github.com/devops-simba/helpers
 
 go 1.15
 
