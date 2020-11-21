@@ -41,6 +41,18 @@ const (
 	ED25519  CryptoAlgorithm = "ED25519"
 )
 
+func bigMul(values ...int64) *big.Int {
+	z := big.NewInt(1)
+	for i := 0; i < len(values); i++ {
+		z.Mul(z, big.NewInt(values[i]))
+	}
+	return z
+}
+
+var (
+	maxSerialNumber = bigMul(MaxInt64, MaxInt64, MaxInt64>>24)
+)
+
 func CreatePrivateKey(algo CryptoAlgorithm) (crypto.PrivateKey, error) {
 	switch algo {
 	case RSA2048:
@@ -80,7 +92,7 @@ func GetPublicKey(priv crypto.PrivateKey) (crypto.PublicKey, error) {
 }
 
 func CreateX509Certificate(commonName string, isCA bool, expiryTime time.Time) (*x509.Certificate, error) {
-	serialNumber, err := rand.Int(rand.Reader, big.NewInt(MaxInt64))
+	serialNumber, err := rand.Int(rand.Reader, maxSerialNumber)
 	if err != nil {
 		return nil, err
 	}
