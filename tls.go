@@ -10,6 +10,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"errors"
+	"math/big"
 	"time"
 )
 
@@ -64,7 +65,7 @@ func GetPublicKey(privKey crypto.PrivateKey) (crypto.PublicKey, error) {
 }
 
 func CreateX509Certificate(commonName string, isCA bool, expiryTime time.Time) (*x509.Certificate, error) {
-	serialNumber, err := rand.Int(rand.Reader, nil)
+	serialNumber, err := rand.Int(rand.Reader, big.NewInt(MaxInt64))
 	if err != nil {
 		return nil, err
 	}
