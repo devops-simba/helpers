@@ -90,9 +90,9 @@ func CreateX509Certificate(commonName string, isCA bool, expiryTime time.Time) (
 }
 
 type CertAndKey struct {
-	Certificate  *x509.Certificate
-	PrivateKey   crypto.PrivateKey
-	certDERBytes []byte
+	Certificate *x509.Certificate
+	PrivateKey  crypto.PrivateKey
+	DER         []byte
 }
 
 func CreateCertificate(cert *x509.Certificate, privateKey crypto.PrivateKey, issuer *CertAndKey) (*CertAndKey, error) {
@@ -125,13 +125,13 @@ func CreateCertificate(cert *x509.Certificate, privateKey crypto.PrivateKey, iss
 	}
 
 	return &CertAndKey{
-		Certificate:  cert,
-		PrivateKey:   privateKey,
-		certDERBytes: der,
+		Certificate: cert,
+		PrivateKey:  privateKey,
+		DER:         der,
 	}, nil
 }
 func (this *CertAndKey) CertificatePEMBlock() *pem.Block {
-	return &pem.Block{Type: "CERTIFICATE", Bytes: this.certDERBytes}
+	return &pem.Block{Type: "CERTIFICATE", Bytes: this.DER}
 }
 func (this *CertAndKey) PrivateKeyPEMBlock() (*pem.Block, error) {
 	switch k := this.PrivateKey.(type) {
