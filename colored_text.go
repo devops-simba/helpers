@@ -53,11 +53,10 @@ func (this RGBColor) IsBackground() bool  { return (this & 0x80000000) != 0 }
 func (this RGBColor) AsForeground() Color { return this & 0xFFFFFF }
 func (this RGBColor) AsBackground() Color { return RGBColor(this | 0x80000000) }
 func (this RGBColor) AsHtmlColor() string {
-	if name, ok := rgbColorNames[this.Code()]; ok {
+	if name := GetColorNameByCode(this.Code()); name != "" {
 		return name
-	} else {
-		return this.Code().String()
 	}
+	return this.Code().String()
 }
 func (this RGBColor) AsTerminalColor() string {
 	code := this.Code()
@@ -463,7 +462,25 @@ const (
 	YellowGreen          RGBColor = 0x9ACD32
 )
 
-var rgbColorNames = map[RGBCode]string{
+type colorNameMap struct {
+	colorNamesByCode map[RGBCode]string
+	colorsByName     map[string]RGBCode
+}
+
+func createColorNameMap(colorNamesByCode map[RGBCode]string) *colorNameMap {
+	result := &colorNameMap{
+		colorNamesByCode: colorNamesByCode,
+		colorsByName:     make(map[string]RGBCode),
+	}
+
+	for code, name := range colorNamesByCode {
+		result.colorsByName[name] = code
+	}
+
+	return result
+}
+
+var rgbColors = createColorNameMap(map[RGBCode]string{
 	AliceBlue.Code():            "AliceBlue",
 	AntiqueWhite.Code():         "AntiqueWhite",
 	Aqua.Code():                 "Aqua",
@@ -612,4 +629,21 @@ var rgbColorNames = map[RGBCode]string{
 	WhiteSmoke.Code():           "WhiteSmoke",
 	Yellow.Code():               "Yellow",
 	YellowGreen.Code():          "YellowGreen",
+})
+
+func GetColorNameByCode(code RGBCode) string {
+	if name, ok := rgbColors.colorNamesByCode[code]; ok {
+		return name
+	}
+	return ""
+}
+func GetColorCodeByName(name string) RGBCode {
+	if code, ok := rgbColors.colorsByName[name]; ok {
+		return code
+	}
+	return NoColorCode
+}
+func SetColorCodeName(code RGBCode, name string) {
+	rgbColors.colorNamesByCode[code] = name
+	rgbColors.colorsByName[name] = code
 }
