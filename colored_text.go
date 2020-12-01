@@ -4,15 +4,22 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 )
 
 const (
-	NoColorCode RGBCode     = 0xFFFFFFFF
-	NoColor     NoColorT    = false
-	TTY         TTYContext  = true
-	MonoColor   TTYContext  = false
-	HTML        HTMLContext = true
+	NoColorCode RGBCode = 0xFFFFFFFF
+	// NoColor means that content does not have any color of its own and get color of its contex
+	NoColor   NoColorT    = false
+	TTY       TTYContext  = true
+	MonoColor TTYContext  = false
+	HTML      HTMLContext = true
 )
+
+func writeToWriter(w io.Writer, buf []byte) error {
+	_, err := w.Write(buf)
+	return err
+}
 
 //region RGBCode: RGB representation of a color
 type RGBCode uint32
@@ -21,6 +28,15 @@ func (this RGBCode) Red() uint8     { return uint8((this >> 16) & 0xFF) }
 func (this RGBCode) Green() uint8   { return uint8((this >> 8) & 0xFF) }
 func (this RGBCode) Blue() uint8    { return uint8((this >> 0) & 0xFF) }
 func (this RGBCode) String() string { return fmt.Sprintf("#%X", uint32(this&0xFFFFFF)) }
+func (this RGBCode) ToColor() Color {
+	if this == NoColorCode {
+		return NoColor
+	}
+	if (this & 0xFF000000) != 0 {
+		panic("Invalid color code")
+	}
+	return RGBColor(this)
+}
 
 // endregion
 
@@ -53,24 +69,72 @@ func (this RGBColor) IsBackground() bool  { return (this & 0x80000000) != 0 }
 func (this RGBColor) AsForeground() Color { return this & 0xFFFFFF }
 func (this RGBColor) AsBackground() Color { return RGBColor(this | 0x80000000) }
 func (this RGBColor) AsHtmlColor() string {
-	if name := GetColorNameByCode(this.Code()); name != "" {
-		return name
+	htmlColorName := ""
+	if htmlColorName = GetColorNameByCode(this.Code()); htmlColorName == "" {
+		htmlColorName = this.Code().String()
 	}
-	return this.Code().String()
+	if this.IsBackground() {
+		return "background-color: " + htmlColorName
+	}
+	return "color: " + htmlColorName
 }
 func (this RGBColor) AsTerminalColor() string {
 	code := this.Code()
 	if this.IsBackground() {
 		return fmt.Sprintf("48;2;%d;%d;%d", code.Red(), code.Green(), code.Blue())
 	} else {
-		return fmt.Sprintf("48;2;%d;%d;%d", code.Red(), code.Green(), code.Blue())
+		return fmt.Sprintf("38;2;%d;%d;%d", code.Red(), code.Green(), code.Blue())
+	}
+}
+
+//endregion
+
+//region ColoredWriter
+type ColoredWriter struct {
+	context ColorContext
+	w       io.Writer
+	color   Color
+}
+
+func NewColoredWriterWithColor(context ColorContext, w io.Writer, color Color) *ColoredWriter {
+	return &ColoredWriter{context: context, w: w, color: color}
+}
+func NewColoredWriter(context ColorContext, w io.Writer) *ColoredWriter {
+	return NewColoredWriterWithColor(context, w, NoColor)
+}
+func (this *ColoredWriter) GetWriter() io.Writer { return this.w }
+func (this *ColoredWriter) GetColor() Color      { return this.color }
+func (this *ColoredWriter) SetColor(color Color) (oldColor Color) {
+	oldColor = this.color
+	if color.Code() != NoColorCode {
+		this.color = color
+	}
+	return oldColor
+}
+func (this *ColoredWriter) Write(b []byte) error {
+	return this.context.Write(this, b)
+}
+func (this *ColoredWriter) WriteString(s string) error { return this.Write([]byte(s)) }
+func (this *ColoredWriter) WriteContent(content interface{}) error {
+	if content == nil {
+		content = "<nil>"
+	}
+	if buf, ok := content.([]byte); ok {
+		return this.Write(buf)
+	} else if s, ok := content.(string); ok {
+		return this.WriteString(s)
+	} else if cc, ok := content.(ColoredContent); ok {
+		return cc.Render(this)
+	} else {
+		s := fmt.Sprintf("v", content)
+		return this.WriteString(s)
 	}
 }
 
 //endregion
 
 type ColoredContent interface {
-	RenderInContext(context ColorContext, w io.Writer, color Color) error
+	Render(w *ColoredWriter) error
 }
 
 //region ColoredValue: a simple value that bind a content with a ``Color``
@@ -79,8 +143,11 @@ type ColoredValue struct {
 	Content interface{}
 }
 
-func (this ColoredValue) RenderInContext(context ColorContext, w io.Writer, color Color) error {
-	return context.Write(w, this.Color, this.Content)
+func (this ColoredValue) Render(w *ColoredWriter) error {
+	oldColor := w.SetColor(this.Color)
+	defer w.SetColor(oldColor)
+
+	return w.WriteContent(this.Content)
 }
 
 //endregion
@@ -92,20 +159,20 @@ func CreateFormatContent(format string, args ...interface{}) FormatContent {
 	result := ParseFormatString(format, args...)
 	return FormatContent(result)
 }
-func (this FormatContent) RenderInContext(context ColorContext, w io.Writer, color Color) error {
+func (this FormatContent) Render(w *ColoredWriter) error {
 	for i := 0; i < len(this); i++ {
 		var err error
 		node := this[i]
 		if node.FormatString == "" {
-			err = context.Write(w, color, node.Arg)
+			err = w.WriteContent(node.Arg)
 		} else if node.NoArg {
 			value := node.Format()
-			err = context.Write(w, color, value)
+			err = w.WriteContent(value)
 		} else if ccontent, ok := node.Arg.(ColoredContent); ok {
-			err = ccontent.RenderInContext(context, w, color)
+			err = w.WriteContent(ccontent)
 		} else {
 			value := node.Format()
-			err = context.Write(w, color, value)
+			err = w.WriteString(value)
 		}
 		if err != nil {
 			return err
@@ -118,27 +185,7 @@ func (this FormatContent) RenderInContext(context ColorContext, w io.Writer, col
 
 type ColorContext interface {
 	Name() string
-	Write(w io.Writer, color Color, content interface{}) error
-}
-
-func writeToWriter(w io.Writer, buf []byte) error {
-	_, err := w.Write(buf)
-	return err
-}
-func writeToContext(context ColorContext, w io.Writer, color Color, content interface{}) error {
-	if buffer, ok := content.([]byte); ok {
-		return writeToWriter(w, buffer)
-	} else if str, ok := content.(string); ok {
-		return writeToWriter(w, []byte(str))
-	} else if cc, ok := content.(ColoredContent); ok {
-		return cc.RenderInContext(context, w, color)
-	} else if s, ok := content.(fmt.Stringer); ok {
-		str := s.String()
-		return writeToWriter(w, []byte(str))
-	} else {
-		str := fmt.Sprintf("%v", content)
-		return writeToWriter(w, []byte(str))
-	}
+	Write(w *ColoredWriter, b []byte) error
 }
 
 //region TTYContext: A ``ColorContext`` that support ``TTY`` coloring and ``MonoColor``
@@ -150,42 +197,6 @@ var (
 	ttyResetColor = []byte("\033[0m")
 )
 
-func writeTTYColor(w io.Writer, clr string) error {
-	_, err := w.Write(ttyStartColor)
-	if err != nil {
-		return err
-	}
-
-	_, err = w.Write([]byte(clr))
-	if err != nil {
-		return err
-	}
-
-	_, err = w.Write(ttyEndColor)
-	return err
-}
-
-func (this TTYContext) writeColor(w io.Writer, color Color) (bool, error) {
-	if this {
-		clrText := color.AsTerminalColor()
-		if clrText != "" {
-			err := writeToWriter(w, ttyStartColor)
-			if err != nil {
-				return false, err
-			}
-
-			err = writeToWriter(w, []byte(clrText))
-			if err != nil {
-				return false, err
-			}
-
-			return true, writeToWriter(w, ttyEndColor)
-		}
-	}
-
-	return false, nil
-}
-
 func (this TTYContext) Name() string {
 	if this {
 		return "TTY"
@@ -193,19 +204,32 @@ func (this TTYContext) Name() string {
 		return "MonoColor"
 	}
 }
-func (this TTYContext) Write(w io.Writer, color Color, content interface{}) error {
-	requireReset, err := this.writeColor(w, color)
-	if err != nil {
-		return err
+func (this TTYContext) Write(w *ColoredWriter, b []byte) error {
+	var err error
+	requireReset := false
+	if this {
+		if clrText := w.GetColor().AsTerminalColor(); clrText != "" {
+			requireReset = true
+
+			if err = writeToWriter(w.GetWriter(), ttyStartColor); err != nil {
+				return err
+			}
+			if err = writeToWriter(w.GetWriter(), []byte(clrText)); err != nil {
+				return err
+			}
+
+			if err = writeToWriter(w.GetWriter(), ttyEndColor); err != nil {
+				return err
+			}
+		}
 	}
 
-	err = writeToContext(this, w, color, content)
-	if err != nil {
+	if err = writeToWriter(w.GetWriter(), b); err != nil {
 		return err
 	}
 
 	if requireReset {
-		return writeToWriter(w, ttyResetColor)
+		return writeToWriter(w.GetWriter(), ttyResetColor)
 	}
 	return nil
 }
@@ -230,19 +254,23 @@ func writeHTMLColor(w io.Writer, color Color) (bool, error) {
 }
 
 func (this HTMLContext) Name() string { return "HTML" }
-func (this HTMLContext) Write(w io.Writer, color Color, content interface{}) error {
-	requireReset, err := writeHTMLColor(w, color)
-	if err != nil {
-		return err
+func (this HTMLContext) Write(w *ColoredWriter, b []byte) error {
+	var err error
+	requireReset := false
+	if clrText := w.GetColor().AsHtmlColor(); clrText != "" {
+		requireReset = true
+		start := fmt.Sprintf(`<span style="%s">`, clrText)
+		if err = writeToWriter(w.GetWriter(), []byte(start)); err != nil {
+			return err
+		}
 	}
 
-	err = writeToContext(this, w, color, content)
-	if err != nil {
+	if err = writeToWriter(w.GetWriter(), b); err != nil {
 		return err
 	}
 
 	if requireReset {
-		return writeToWriter(w, htmlEndColor)
+		return writeToWriter(w.GetWriter(), htmlEndColor)
 	}
 	return nil
 }
@@ -293,12 +321,19 @@ func CWrite(w io.Writer, content interface{}, context ColorContext) error {
 	if context == nil {
 		context = GetDefaultContext(w)
 	}
-	return context.Write(w, NoColor, content)
+
+	cw := NewColoredWriter(context, w)
+	return cw.WriteContent(content)
 }
 
 // CWritec write a content with specified color to ``w`` using ``context`` or default context of ``w``
 func CWritec(w io.Writer, color Color, content interface{}, context ColorContext) error {
-	return CWrite(w, CContent(color, content), context)
+	if context == nil {
+		context = GetDefaultContext(w)
+	}
+
+	cw := NewColoredWriterWithColor(context, w, color)
+	return cw.WriteContent(content)
 }
 
 // CWritef write a formatted content to ``w``
@@ -462,25 +497,61 @@ const (
 	YellowGreen          RGBColor = 0x9ACD32
 )
 
-type colorNameMap struct {
+type ColorNameMap struct {
 	colorNamesByCode map[RGBCode]string
 	colorsByName     map[string]RGBCode
 }
 
-func createColorNameMap(colorNamesByCode map[RGBCode]string) *colorNameMap {
-	result := &colorNameMap{
-		colorNamesByCode: colorNamesByCode,
+func NewColorNameMap(colorNamesByCode map[RGBCode]string) *ColorNameMap {
+	result := &ColorNameMap{
+		colorNamesByCode: make(map[RGBCode]string),
 		colorsByName:     make(map[string]RGBCode),
 	}
 
-	for code, name := range colorNamesByCode {
-		result.colorsByName[name] = code
+	if colorNamesByCode != nil {
+		for code, name := range colorNamesByCode {
+			result.SetColorCodeName(code, name)
+		}
 	}
 
 	return result
 }
+func (this *ColorNameMap) GetColorNameByCode(code RGBCode) string {
+	if name, ok := this.colorNamesByCode[code]; ok {
+		return name
+	}
+	return ""
+}
+func (this *ColorNameMap) GetColorCodeByName(name string) RGBCode {
+	iname := strings.ToLower(name)
+	if code, ok := this.colorsByName[iname]; ok {
+		return code
+	}
+	return NoColorCode
+}
+func (this *ColorNameMap) SetColorCodeName(code RGBCode, name string) *ColorNameMap {
+	this.colorNamesByCode[code] = name
+	iname := strings.ToLower(name)
+	this.colorsByName[iname] = code
+	return this
+}
+func (this *ColorNameMap) AddName(name string, code RGBCode) *ColorNameMap {
+	iname := strings.ToLower(name)
+	this.colorsByName[iname] = code
+	return this
+}
+func (this *ColorNameMap) Clone() *ColorNameMap {
+	result := NewColorNameMap(nil)
+	for code, name := range this.colorNamesByCode {
+		result.colorNamesByCode[code] = name
+	}
+	for name, code := range this.colorsByName {
+		result.colorsByName[name] = code
+	}
+	return result
+}
 
-var rgbColors = createColorNameMap(map[RGBCode]string{
+var globalColorMap = NewColorNameMap(map[RGBCode]string{
 	AliceBlue.Code():            "AliceBlue",
 	AntiqueWhite.Code():         "AntiqueWhite",
 	Aqua.Code():                 "Aqua",
@@ -631,19 +702,25 @@ var rgbColors = createColorNameMap(map[RGBCode]string{
 	YellowGreen.Code():          "YellowGreen",
 })
 
-func GetColorNameByCode(code RGBCode) string {
-	if name, ok := rgbColors.colorNamesByCode[code]; ok {
-		return name
-	}
-	return ""
+func GetGlobalColorMap() *ColorNameMap           { return globalColorMap }
+func GetColorNameByCode(code RGBCode) string     { return globalColorMap.GetColorNameByCode(code) }
+func GetColorCodeByName(name string) RGBCode     { return globalColorMap.GetColorCodeByName(name) }
+func SetColorCodeName(code RGBCode, name string) { globalColorMap.SetColorCodeName(code, name) }
+
+type ContentWithContext struct {
+	Context ColorContext
+	Content interface{}
 }
-func GetColorCodeByName(name string) RGBCode {
-	if code, ok := rgbColors.colorsByName[name]; ok {
-		return code
-	}
-	return NoColorCode
+
+func BindContentToContext(context ColorContext, content interface{}) ContentWithContext {
+	return ContentWithContext{Context: context, Content: content}
 }
-func SetColorCodeName(code RGBCode, name string) {
-	rgbColors.colorNamesByCode[code] = name
-	rgbColors.colorsByName[name] = code
+
+func (this ContentWithContext) Render(w *ColoredWriter) error {
+	return w.WriteContent(this.Content)
+}
+func (this ContentWithContext) String() string {
+	builder := &strings.Builder{}
+	CWrite(builder, this.Content, this.Context)
+	return builder.String()
 }

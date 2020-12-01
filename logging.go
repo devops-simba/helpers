@@ -3,12 +3,9 @@ package helpers
 import (
 	"fmt"
 	"os"
-	"strings"
 	"text/template"
 	"time"
 )
-
-type LogLevel int
 
 const (
 	Debug LogLevel = iota
@@ -17,6 +14,12 @@ const (
 	Error
 	Fatal
 )
+
+var (
+	EOL = []byte{'\n'}
+)
+
+type LogLevel int
 
 func (this LogLevel) Format(format string) string {
 	switch format {
@@ -116,6 +119,17 @@ type LogRecord struct {
 	LogSource string
 	LogTime   time.Time
 	Content   interface{}
+	context   ColorContext
+	colorMap  *ColorNameMap
+}
+
+// Support for colored templating
+func (this *LogRecord) GetContext() ColorContext   { return this.context }
+func (this *LogRecord) GetColorMap() *ColorNameMap { return this.colorMap }
+func (this *LogRecord) GetDefaultColor() Color {
+	colorName := "log:" + this.Level.Format("letter")
+	code := this.colorMap.GetColorCodeByName(colorName)
+	return code.ToColor()
 }
 
 type FileLogFactory struct {
@@ -125,6 +139,7 @@ type FileLogFactory struct {
 	stopped        chan struct{}
 	minimumLevel   LogLevel
 	verbosityLevel int
+	colorMap       *ColorNameMap
 }
 
 func NewFileLogFactory(format *template.Template, output *os.File, minimumLogLevel LogLevel, verbosityLevel int) *FileLogFactory {
@@ -135,30 +150,44 @@ func NewFileLogFactory(format *template.Template, output *os.File, minimumLogLev
 		stopped:        make(chan struct{}),
 		minimumLevel:   minimumLogLevel,
 		verbosityLevel: verbosityLevel,
+		colorMap: GetGlobalColorMap().Clone().
+			AddName("log:D", Grey.Code()).
+			AddName("log:I", White.Code()).
+			AddName("log:W", Orange.Code()).
+			AddName("log:E", Red.Code()).
+			AddName("log:F", DarkRed.Code()),
 	}
 
-	context := GetDefaultContext(output)
-	go func() {
-		for {
-			rec := <-result.dispatcher
-			if rec == nil {
-				break
-			}
-
-			if _, ok := rec.Content.(ColoredContent); ok {
-				builder := &strings.Builder{}
-				CWrite(builder, rec.Content, context)
-				rec.Content = builder.String()
-			}
-
-			result.format.Execute(result.output, rec)
-		}
-		close(result.stopped)
-	}()
+	go result.dispatch()
 
 	return result
 }
 
+func (this *FileLogFactory) dispatch() {
+	context := GetDefaultContext(this.output)
+	for {
+		rec := <-this.dispatcher
+		if rec == nil {
+			break
+		}
+
+		rec.context = context
+		if _, ok := rec.Content.(ColoredContent); ok {
+			rec.Content = BindContentToContext(context, rec.Content)
+		}
+
+		err := this.format.Execute(this.output, rec)
+		this.output.Write(EOL)
+		if err != nil {
+			fmt.Printf("LOG FAILED: %v\n", err)
+		}
+	}
+	close(this.stopped)
+}
+func (this *FileLogFactory) SetColor(level LogLevel, color Color) *FileLogFactory {
+	this.colorMap.AddName("log:"+level.Format("letter"), color.Code())
+	return this
+}
 func (this *FileLogFactory) CreateLogger(name string, minimumLogLevel *LogLevel, verbosityLevel *int) Logger {
 	if minimumLogLevel == nil {
 		minimumLogLevel = &this.minimumLevel
@@ -191,12 +220,13 @@ func (this FileLogger) doLog(level LogLevel, message interface{}) {
 		LogSource: this.name,
 		LogTime:   time.Now(),
 		Content:   message,
+		colorMap:  this.factory.colorMap,
 	}
 
 	this.factory.dispatcher <- rec
 }
 func (this FileLogger) doLogf(level LogLevel, format string, args ...interface{}) {
-	this.log(level, CreateFormatContent(format, args...))
+	this.doLog(level, CreateFormatContent(format, args...))
 }
 
 func (this FileLogger) log(level LogLevel, message interface{}) {
