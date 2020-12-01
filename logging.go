@@ -2,6 +2,7 @@ package helpers
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"text/template"
 	"time"
@@ -89,12 +90,35 @@ func (this LogLevel) Format(format string) string {
 }
 func (this LogLevel) String() string { return this.Format("n") }
 
-type LogFactory interface {
-	CreateLogger(name string, level *LogLevel, verbosityLevel *int) Logger
+type LogRecord struct {
+	Level     LogLevel
+	LogSource string
+	LogTime   time.Time
+	Content   interface{}
+	context   ColorContext
+	colorMap  *ColorNameMap
 }
 
+// Support for colored templating
+func (this *LogRecord) GetContext() ColorContext   { return this.context }
+func (this *LogRecord) GetColorMap() *ColorNameMap { return this.colorMap }
+func (this *LogRecord) GetDefaultColor() Color {
+	colorName := "log:" + this.Level.Format("letter")
+	code := this.colorMap.GetColorCodeByName(colorName)
+	return code.ToColor()
+}
+
+type LogFactory interface {
+	io.Closer
+	CreateLogger(name string, level *LogLevel, verbosityLevel *int) Logger
+}
 type Logger interface {
-	LogFactory
+	GetName() string
+	GetLogFactory() LogFactory
+	GetMinimumLevel() LogLevel
+	GetVerbosityLevel() int
+
+	CreateLogger(name string, level *LogLevel, verbosityLevel *int) Logger
 
 	V(verbosityLevel int) bool
 	IsEnabled(level LogLevel) bool
@@ -114,39 +138,30 @@ type Logger interface {
 	Verbosef(verbosityLevel int, format string, args ...interface{})
 }
 
-type LogRecord struct {
-	Level     LogLevel
-	LogSource string
-	LogTime   time.Time
-	Content   interface{}
-	context   ColorContext
-	colorMap  *ColorNameMap
-}
-
-// Support for colored templating
-func (this *LogRecord) GetContext() ColorContext   { return this.context }
-func (this *LogRecord) GetColorMap() *ColorNameMap { return this.colorMap }
-func (this *LogRecord) GetDefaultColor() Color {
-	colorName := "log:" + this.Level.Format("letter")
-	code := this.colorMap.GetColorCodeByName(colorName)
-	return code.ToColor()
-}
-
 type FileLogFactory struct {
+	name           string
 	dispatcher     chan *LogRecord
 	format         *template.Template
 	output         *os.File
+	closeOutput    bool
 	stopped        chan struct{}
 	minimumLevel   LogLevel
 	verbosityLevel int
 	colorMap       *ColorNameMap
 }
 
-func NewFileLogFactory(format *template.Template, output *os.File, minimumLogLevel LogLevel, verbosityLevel int) *FileLogFactory {
+// NewFileLogFactory Create a a ``FileLogFactory``
+func NewFileLogFactory(
+	format *template.Template,
+	output *os.File,
+	minimumLogLevel LogLevel,
+	verbosityLevel int,
+	mustCloseOutput bool) *FileLogFactory {
 	result := &FileLogFactory{
 		dispatcher:     make(chan *LogRecord),
 		format:         format,
 		output:         output,
+		closeOutput:    mustCloseOutput,
 		stopped:        make(chan struct{}),
 		minimumLevel:   minimumLogLevel,
 		verbosityLevel: verbosityLevel,
@@ -202,9 +217,13 @@ func (this *FileLogFactory) CreateLogger(name string, minimumLogLevel *LogLevel,
 		verbosityLevel: *verbosityLevel,
 	}
 }
-func (this *FileLogFactory) Close() {
+func (this *FileLogFactory) Close() error {
 	this.dispatcher <- nil
 	<-this.stopped
+	if this.closeOutput {
+		return this.output.Close()
+	}
+	return nil
 }
 
 type FileLogger struct {
@@ -240,6 +259,10 @@ func (this FileLogger) logf(level LogLevel, format string, args ...interface{}) 
 	}
 }
 
+func (this FileLogger) GetName() string           { return this.name }
+func (this FileLogger) GetLogFactory() LogFactory { return this.factory }
+func (this FileLogger) GetMinimumLevel() LogLevel { return this.minimumLevel }
+func (this FileLogger) GetVerbosityLevel() int    { return this.verbosityLevel }
 func (this FileLogger) CreateLogger(name string, minimumLogLevel *LogLevel, verbosityLevel *int) Logger {
 	if minimumLogLevel == nil {
 		minimumLogLevel = &this.minimumLevel
