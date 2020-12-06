@@ -126,7 +126,7 @@ func (this *ColoredWriter) WriteContent(content interface{}) error {
 	} else if cc, ok := content.(ColoredContent); ok {
 		return cc.Render(this)
 	} else {
-		s := fmt.Sprintf("v", content)
+		s := fmt.Sprintf("%v", content)
 		return this.WriteString(s)
 	}
 }

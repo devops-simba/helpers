@@ -1,9 +1,11 @@
 package helpers
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"text/template"
 	"time"
 )
@@ -15,6 +17,8 @@ const (
 	Error
 	Fatal
 )
+
+const InvalidLogLevel = StringError("Invalid LogLevel")
 
 var (
 	EOL = []byte{'\n'}
@@ -89,6 +93,61 @@ func (this LogLevel) Format(format string) string {
 	}
 }
 func (this LogLevel) String() string { return this.Format("n") }
+
+type LogLevelUnmarshaller struct {
+	Level LogLevel
+}
+
+func (this *LogLevelUnmarshaller) fromInt(n int) error {
+	if n < int(Debug) || n > int(Fatal) {
+		return fmt.Errorf("`%d` is not a valid LogLevel, accepted range is [%d, %d]", n, int(Debug), int(Fatal))
+	}
+	this.Level = LogLevel(n)
+	return nil
+}
+func (this *LogLevelUnmarshaller) fromString(s string) error {
+	switch strings.ToLower(s) {
+	case "debug", "dbg":
+		this.Level = Debug
+	case "information", "info":
+		this.Level = Info
+	case "warning", "warn":
+		this.Level = Warn
+	case "error", "err":
+		this.Level = Error
+	case "fatal", "ftl":
+		this.Level = Fatal
+	default:
+		return fmt.Errorf("`%s` is not a valid LogLevel", s)
+	}
+	return nil
+}
+func (this *LogLevelUnmarshaller) UnmarshalJSON(data []byte) error {
+	var strLevel string
+	if err := json.Unmarshal(data, &strLevel); err != nil {
+		return this.fromString(strLevel)
+	}
+
+	var nLevel int
+	if err := json.Unmarshal(data, &nLevel); err != nil {
+		return this.fromInt(nLevel)
+	}
+
+	return InvalidLogLevel
+}
+func (this *LogLevelUnmarshaller) UnmarshalYAML(unmarshal func(interface{}) error) error {
+	var strLevel string
+	if err := unmarshal(&strLevel); err == nil {
+		return this.fromString(strLevel)
+	}
+
+	var nLevel int
+	if err := unmarshal(&nLevel); err == nil {
+		return this.fromInt(nLevel)
+	}
+
+	return InvalidLogLevel
+}
 
 type LogRecord struct {
 	Level     LogLevel
