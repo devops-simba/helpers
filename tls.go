@@ -12,6 +12,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"io/ioutil"
+	"math"
 	"math/big"
 	"time"
 )
@@ -50,7 +51,7 @@ func bigMul(values ...int64) *big.Int {
 }
 
 var (
-	maxSerialNumber = bigMul(MaxInt64, MaxInt64, MaxInt64>>24)
+	maxSerialNumber = bigMul(math.MaxInt64, math.MaxInt64, math.MaxInt64>>24)
 )
 
 func CreatePrivateKey(algo CryptoAlgorithm) (crypto.PrivateKey, error) {

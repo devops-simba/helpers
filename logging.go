@@ -197,6 +197,42 @@ type Logger interface {
 	Verbosef(verbosityLevel int, format string, args ...interface{})
 }
 
+const (
+	NullLogger        NullLoggerT        = false
+	NullLoggerFactory NullLoggerFactoryT = false
+)
+
+type NullLoggerFactoryT bool
+
+func (this NullLoggerFactoryT) Close() error { return nil }
+func (this NullLoggerFactoryT) CreateLogger(name string, level *LogLevel, verbosityLevel *int) Logger {
+	return NullLogger
+}
+
+type NullLoggerT bool
+
+func (this NullLoggerT) CreateLogger(name string, level *LogLevel, verbosityLevel *int) Logger {
+	return this
+}
+func (this NullLoggerT) GetName() string                                                 { return "Null" }
+func (this NullLoggerT) GetLogFactory() LogFactory                                       { return NullLoggerFactory }
+func (this NullLoggerT) GetMinimumLevel() LogLevel                                       { return Fatal }
+func (this NullLoggerT) GetVerbosityLevel() int                                          { return 0 }
+func (this NullLoggerT) V(verbosityLevel int) bool                                       { return false }
+func (this NullLoggerT) IsEnabled(level LogLevel) bool                                   { return false }
+func (this NullLoggerT) Debug(message interface{})                                       {}
+func (this NullLoggerT) Debugf(format string, args ...interface{})                       {}
+func (this NullLoggerT) Info(message interface{})                                        {}
+func (this NullLoggerT) Infof(format string, args ...interface{})                        {}
+func (this NullLoggerT) Warn(message interface{})                                        {}
+func (this NullLoggerT) Warnf(format string, args ...interface{})                        {}
+func (this NullLoggerT) Error(message interface{})                                       {}
+func (this NullLoggerT) Errorf(format string, args ...interface{})                       {}
+func (this NullLoggerT) Fatal(message interface{})                                       {}
+func (this NullLoggerT) Fatalf(format string, args ...interface{})                       {}
+func (this NullLoggerT) Verbose(verbosityLevel int, message interface{})                 {}
+func (this NullLoggerT) Verbosef(verbosityLevel int, format string, args ...interface{}) {}
+
 type FileLogFactory struct {
 	name           string
 	dispatcher     chan *LogRecord
@@ -349,12 +385,12 @@ func (this FileLogger) Errorf(format string, args ...interface{}) { this.logf(Er
 func (this FileLogger) Fatal(message interface{})                 { this.log(Fatal, message) }
 func (this FileLogger) Fatalf(format string, args ...interface{}) { this.logf(Fatal, format, args...) }
 func (this FileLogger) Verbose(verbosityLevel int, message interface{}) {
-	if verbosityLevel >= this.verbosityLevel {
+	if verbosityLevel <= this.verbosityLevel {
 		this.doLog(Info, message)
 	}
 }
 func (this FileLogger) Verbosef(verbosityLevel int, format string, args ...interface{}) {
-	if verbosityLevel >= this.verbosityLevel {
+	if verbosityLevel <= this.verbosityLevel {
 		this.doLogf(Info, format, args...)
 	}
 }
