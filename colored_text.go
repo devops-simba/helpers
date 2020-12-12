@@ -16,11 +16,6 @@ const (
 	HTML      HTMLContext = true
 )
 
-func writeToWriter(w io.Writer, buf []byte) error {
-	_, err := w.Write(buf)
-	return err
-}
-
 //region RGBCode: RGB representation of a color
 type RGBCode uint32
 
@@ -40,24 +35,40 @@ func (this RGBCode) ToColor() Color {
 
 // endregion
 
+type ColorCoverage int
+
+const (
+	NoCoverage ColorCoverage = iota
+	Foreground
+	Background
+	Both
+)
+
+type ColorName struct {
+	Foreground string
+	Background string
+}
+
+func (this ColorName) IsEmpty() bool { return this.Foreground == "" && this.Background == "" }
+
 type Color interface {
 	Code() RGBCode
-	IsBackground() bool
+	Coverage() ColorCoverage
 	AsForeground() Color
 	AsBackground() Color
-	AsHtmlColor() string
-	AsTerminalColor() string
+	HtmlColorName() ColorName
+	TerminalColorName() ColorName
 }
 
 //region NoColorT: Implementation of a nil value for ``Color`` interface
 type NoColorT bool
 
-func (this NoColorT) Code() RGBCode           { return NoColorCode }
-func (this NoColorT) IsBackground() bool      { return false }
-func (this NoColorT) AsForeground() Color     { return this }
-func (this NoColorT) AsBackground() Color     { return this }
-func (this NoColorT) AsHtmlColor() string     { return "" }
-func (this NoColorT) AsTerminalColor() string { return "" }
+func (this NoColorT) Code() RGBCode                { return NoColorCode }
+func (this NoColorT) Coverage() ColorCoverage      { return NoCoverage }
+func (this NoColorT) AsForeground() Color          { return this }
+func (this NoColorT) AsBackground() Color          { return this }
+func (this NoColorT) HtmlColorName() ColorName     { return ColorName{} }
+func (this NoColorT) TerminalColorName() ColorName { return ColorName{} }
 
 //endregion
 
@@ -65,25 +76,63 @@ func (this NoColorT) AsTerminalColor() string { return "" }
 type RGBColor uint32
 
 func (this RGBColor) Code() RGBCode       { return RGBCode(uint32(this & 0xFFFFFF)) }
-func (this RGBColor) IsBackground() bool  { return (this & 0x80000000) != 0 }
 func (this RGBColor) AsForeground() Color { return this & 0xFFFFFF }
 func (this RGBColor) AsBackground() Color { return RGBColor(this | 0x80000000) }
-func (this RGBColor) AsHtmlColor() string {
+func (this RGBColor) Coverage() ColorCoverage {
+	if (this & 0x80000000) != 0 {
+		return Background
+	} else {
+		return Foreground
+	}
+}
+func (this RGBColor) HtmlColorName() ColorName {
 	htmlColorName := ""
 	if htmlColorName = GetColorNameByCode(this.Code()); htmlColorName == "" {
 		htmlColorName = this.Code().String()
 	}
-	if this.IsBackground() {
-		return "background-color: " + htmlColorName
+	if this.Coverage() == Background {
+		return ColorName{Background: htmlColorName}
 	}
-	return "color: " + htmlColorName
+	return ColorName{Foreground: htmlColorName}
 }
-func (this RGBColor) AsTerminalColor() string {
+func (this RGBColor) TerminalColorName() ColorName {
 	code := this.Code()
-	if this.IsBackground() {
-		return fmt.Sprintf("48;2;%d;%d;%d", code.Red(), code.Green(), code.Blue())
+	if this.Coverage() == Background {
+		return ColorName{Background: fmt.Sprintf("48;2;%d;%d;%d", code.Red(), code.Green(), code.Blue())}
 	} else {
-		return fmt.Sprintf("38;2;%d;%d;%d", code.Red(), code.Green(), code.Blue())
+		return ColorName{Foreground: fmt.Sprintf("38;2;%d;%d;%d", code.Red(), code.Green(), code.Blue())}
+	}
+}
+
+//endregion
+
+//region MixedColor
+type MixedColor struct {
+	foreground Color
+	background Color
+}
+
+func MixColors(foreground, background Color) MixedColor {
+	return MixedColor{
+		foreground: foreground.AsForeground(),
+		background: background.AsBackground(),
+	}
+}
+
+func (this MixedColor) Coverage() ColorCoverage { return Both }
+func (this MixedColor) Code() RGBCode           { return this.foreground.Code() }
+func (this MixedColor) AsForeground() Color     { return this.foreground }
+func (this MixedColor) AsBackground() Color     { return this.background }
+func (this MixedColor) HtmlColorName() ColorName {
+	return ColorName{
+		Foreground: this.foreground.HtmlColorName().Foreground,
+		Background: this.background.HtmlColorName().Background,
+	}
+}
+func (this MixedColor) TerminalColorName() ColorName {
+	return ColorName{
+		Foreground: this.foreground.TerminalColorName().Foreground,
+		Background: this.background.TerminalColorName().Background,
 	}
 }
 
@@ -197,6 +246,21 @@ var (
 	ttyResetColor = []byte("\033[0m")
 )
 
+func writeTerminalColor(w io.Writer, color string) error {
+	if _, err := w.Write(ttyStartColor); err != nil {
+		return err
+	}
+	if _, err := w.Write([]byte(color)); err != nil {
+		return err
+	}
+
+	if _, err := w.Write(ttyEndColor); err != nil {
+		return err
+	}
+
+	return nil
+}
+
 func (this TTYContext) Name() string {
 	if this {
 		return "TTY"
@@ -208,28 +272,29 @@ func (this TTYContext) Write(w *ColoredWriter, b []byte) error {
 	var err error
 	requireReset := false
 	if this {
-		if clrText := w.GetColor().AsTerminalColor(); clrText != "" {
+		if clr := w.GetColor().TerminalColorName(); !clr.IsEmpty() {
 			requireReset = true
 
-			if err = writeToWriter(w.GetWriter(), ttyStartColor); err != nil {
-				return err
+			if clr.Foreground != "" {
+				if err = writeTerminalColor(w.GetWriter(), clr.Foreground); err != nil {
+					return err
+				}
 			}
-			if err = writeToWriter(w.GetWriter(), []byte(clrText)); err != nil {
-				return err
-			}
-
-			if err = writeToWriter(w.GetWriter(), ttyEndColor); err != nil {
-				return err
+			if clr.Background != "" {
+				if err = writeTerminalColor(w.GetWriter(), clr.Background); err != nil {
+					return err
+				}
 			}
 		}
 	}
 
-	if err = writeToWriter(w.GetWriter(), b); err != nil {
+	if _, err = w.GetWriter().Write(b); err != nil {
 		return err
 	}
 
 	if requireReset {
-		return writeToWriter(w.GetWriter(), ttyResetColor)
+		_, err = w.GetWriter().Write(ttyResetColor)
+		return err
 	}
 	return nil
 }
@@ -244,33 +309,32 @@ var (
 	htmlEndColor         = []byte("</span>")
 )
 
-func writeHTMLColor(w io.Writer, color Color) (bool, error) {
-	clrText := color.AsHtmlColor()
-	if clrText != "" {
-		start := fmt.Sprintf(htmlColorStartFormat, clrText)
-		return true, writeToWriter(w, []byte(start))
-	}
-	return false, nil
-}
-
 func (this HTMLContext) Name() string { return "HTML" }
 func (this HTMLContext) Write(w *ColoredWriter, b []byte) error {
 	var err error
 	requireReset := false
-	if clrText := w.GetColor().AsHtmlColor(); clrText != "" {
+	if clr := w.GetColor().HtmlColorName(); !clr.IsEmpty() {
 		requireReset = true
-		start := fmt.Sprintf(`<span style="%s">`, clrText)
-		if err = writeToWriter(w.GetWriter(), []byte(start)); err != nil {
+		clrHeader := `<span style="`
+		if clr.Foreground != "" {
+			clrHeader += "color: " + clr.Foreground
+		}
+		if clr.Background != "" {
+			clrHeader += "background-color: " + clr.Background
+		}
+		clrHeader += `">`
+		if _, err = w.GetWriter().Write([]byte(clrHeader)); err != nil {
 			return err
 		}
 	}
 
-	if err = writeToWriter(w.GetWriter(), b); err != nil {
+	if _, err = w.GetWriter().Write(b); err != nil {
 		return err
 	}
 
 	if requireReset {
-		return writeToWriter(w.GetWriter(), htmlEndColor)
+		_, err = w.GetWriter().Write(htmlEndColor)
+		return err
 	}
 	return nil
 }
